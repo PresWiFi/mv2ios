@@ -1,0 +1,353 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>mv2ios</title>
+<style>
+:root {
+  --bg: #f6f7f9; --card: #ffffff; --text: #1b1f24; --muted: #5b6470; --line: #dde1e6;
+  --accent: #2563eb; --accent-text: #ffffff; --ok: #15803d; --warn: #b45309; --bad: #b91c1c;
+  --log: #0f172a; --log-text: #d6deeb; --coffee: #ffdd00; --coffee-text: #1b1f24;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0f1216; --card: #171b21; --text: #e6e9ed; --muted: #9aa4b1; --line: #2a3039;
+    --accent: #4f8cff; --ok: #4ade80; --warn: #fbbf24; --bad: #f87171; --log: #0a0d11;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+header, main, footer { max-width: 760px; margin: 0 auto; padding: 0 16px; }
+header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-top: 24px; padding-bottom: 8px; flex-wrap: wrap; }
+h1 { font-size: 22px; margin: 0; }
+h1 small { font-weight: 400; color: var(--muted); font-size: 13px; margin-left: 6px; }
+h2 { font-size: 17px; margin: 0; display: flex; align-items: center; gap: 10px; }
+p { margin: 8px 0; }
+.lead { color: var(--muted); margin: 0 0 16px; }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 18px; margin: 14px 0; }
+.card.locked { opacity: .55; }
+.num { flex: none; width: 26px; height: 26px; border-radius: 50%; display: inline-grid; place-items: center; font-size: 13px; font-weight: 600; background: var(--line); }
+.card.done .num { background: var(--ok); color: #fff; }
+.status { margin-left: auto; font-size: 13px; font-weight: 500; color: var(--muted); }
+.card.done .status { color: var(--ok); }
+.row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 12px; }
+button, .btn { font: inherit; border: 1px solid var(--line); background: var(--card); color: var(--text); padding: 8px 14px; border-radius: 8px; cursor: pointer; text-decoration: none; display: inline-block; }
+button.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+button.danger { color: var(--bad); }
+button:disabled { opacity: .5; cursor: not-allowed; }
+.coffee { background: var(--coffee); color: var(--coffee-text); border-color: transparent; font-weight: 600; }
+input[type=text], textarea, select { font: inherit; width: 100%; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--text); }
+textarea { min-height: 110px; font-family: ui-monospace, Consolas, monospace; font-size: 12px; }
+label.check { display: flex; gap: 8px; align-items: center; color: var(--muted); font-size: 14px; }
+.note { border-left: 3px solid var(--warn); padding: 6px 12px; color: var(--text); background: color-mix(in srgb, var(--warn) 10%, transparent); border-radius: 0 8px 8px 0; margin: 10px 0; }
+.err { color: var(--bad); white-space: pre-wrap; }
+.okmsg { color: var(--ok); }
+.hidden { display: none !important; }
+.emoji { font-size: 64px; text-align: center; margin: 8px 0; }
+.qr { display: block; margin: 12px auto; max-width: 280px; width: 100%; background: #fff; padding: 8px; border-radius: 8px; }
+ol.steps { padding-left: 20px; margin: 8px 0; }
+.backup { display: flex; gap: 10px; align-items: flex-start; border: 1px solid var(--line); border-radius: 8px; padding: 10px; margin: 8px 0; cursor: pointer; }
+.backup small { color: var(--muted); word-break: break-all; }
+.summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 8px; margin-top: 12px; }
+.summary div { background: var(--bg); border-radius: 8px; padding: 10px; }
+.summary b { display: block; font-size: 20px; }
+.summary span { color: var(--muted); font-size: 13px; }
+details.log { margin-top: 14px; }
+details.log summary { cursor: pointer; color: var(--muted); font-size: 14px; }
+pre#log { background: var(--log); color: var(--log-text); padding: 12px; border-radius: 8px; max-height: 260px; overflow: auto; font-size: 12px; white-space: pre-wrap; word-break: break-word; margin: 8px 0 0; }
+footer { color: var(--muted); font-size: 13px; padding-bottom: 32px; }
+footer a { color: inherit; }
+code { font-family: ui-monospace, Consolas, monospace; font-size: 13px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>mv2ios <small id="version"></small></h1>
+  <a id="donate" class="btn coffee hidden" target="_blank" rel="noopener">☕ Buy me a coffee</a>
+</header>
+<main>
+  <p class="lead">Move your Android message history, including RCS and group chats, into the Messages app on an iPhone. Everything stays on this computer.</p>
+
+  <div class="note">
+    <b>Before you start:</b> the iPhone backup must <b>not be encrypted</b>, and restoring an unencrypted backup loses saved passwords, Health data and call history.
+    The best time to use mv2ios is on a freshly set up iPhone, right after "Move to iOS".
+  </div>
+
+  <!-- 1. Pair -->
+  <section class="card" id="c-pair">
+    <h2><span class="num">1</span> Link to your Android phone <span class="status" id="s-pair"></span></h2>
+    <div id="pair-idle">
+      <p>mv2ios connects to Google Messages the same way "Messages for Web" does. A browser window opens for you to sign in to the Google account used on the phone.</p>
+      <div class="row">
+        <button class="primary" id="b-pair">Sign in with Google</button>
+        <button id="b-pair-qr">Use a QR code instead</button>
+        <button id="b-pair-paste">Paste sign-in by hand</button>
+      </div>
+    </div>
+    <div id="pair-paired" class="hidden">
+      <p class="okmsg">This computer is linked to Google Messages.</p>
+      <div class="row"><button class="danger" id="b-unpair">Unlink</button></div>
+    </div>
+    <div id="pair-wait" class="hidden">
+      <p id="pair-msg">Working…</p>
+      <div id="emoji-box" class="hidden">
+        <p>Your phone is showing three emoji. <b>Tap this one:</b></p>
+        <div class="emoji" id="emoji"></div>
+      </div>
+      <div id="qr-box" class="hidden">
+        <p>On the phone, open Google Messages, tap your profile picture, choose <b>Device pairing</b>, then <b>QR code scanner</b>, and scan:</p>
+        <img class="qr" id="qr" alt="QR code">
+      </div>
+    </div>
+    <div id="paste-box" class="hidden">
+      <p id="paste-why" class="err"></p>
+      <ol class="steps">
+        <li>Open a private window (Incognito in Chrome, InPrivate in Edge) and go to<br><code id="cookie-url"></code><br>Sign in with the Google account used by Google Messages on the phone.</li>
+        <li>Once the page has loaded, press <b>F12</b>, open the <b>Network</b> tab, and press <b>F5</b>.</li>
+        <li>Right-click the request named <b>config</b>, choose <b>Copy › Copy as cURL (bash)</b>.</li>
+        <li>Close the private window <b>without signing out</b>, and paste below.</li>
+      </ol>
+      <textarea id="pasted" placeholder="curl 'https://messages.google.com/web/config' …"></textarea>
+      <div class="row"><button class="primary" id="b-paste-go">Link with this sign-in</button><button id="b-paste-cancel">Cancel</button></div>
+    </div>
+  </section>
+
+  <!-- 2. Export -->
+  <section class="card" id="c-export">
+    <h2><span class="num">2</span> Download your messages <span class="status" id="s-export"></span></h2>
+    <p>Keep the Android phone unlocked, online, and with Google Messages open until this finishes. It can take a long time for big histories. If it stops, run it again and it continues where it left off.</p>
+    <label for="archive" style="font-size:14px;color:var(--muted)">Save to folder</label>
+    <input type="text" id="archive" spellcheck="false">
+    <div class="row">
+      <label class="check"><input type="checkbox" id="o-refresh"> Fetch the conversation list again</label>
+      <label class="check"><input type="checkbox" id="o-previews"> Retry photos saved only as previews</label>
+    </div>
+    <div class="row"><button class="primary" id="b-export">Download messages</button></div>
+    <div id="export-result"></div>
+  </section>
+
+  <!-- 3. Inject -->
+  <section class="card" id="c-inject">
+    <h2><span class="num">3</span> Add them to an iPhone backup <span class="status" id="s-inject"></span></h2>
+    <p>Back up the iPhone to this computer with Finder, iTunes or Apple Devices. Leave <b>"Encrypt local backup" turned off</b>. Then pick the backup below.</p>
+    <div id="backups"></div>
+    <div class="row">
+      <button id="b-rescan">Look for backups again</button>
+      <button class="primary" id="b-check">Check what will be added</button>
+      <button id="b-write" disabled>Add to backup</button>
+      <button class="danger hidden" id="b-undo">Undo changes to this backup</button>
+    </div>
+    <div id="inject-result"></div>
+  </section>
+
+  <!-- 4. Restore -->
+  <section class="card" id="c-restore">
+    <h2><span class="num">4</span> Restore the iPhone</h2>
+    <ol class="steps">
+      <li>On the iPhone, turn off <b>Settings › [your name] › iCloud › Messages</b>, so iCloud does not overwrite the restored history.</li>
+      <li>Restore the backup to the iPhone with the same app that made it (Finder, iTunes or Apple Devices).</li>
+      <li>Check that the messages arrived, then turn iCloud Messages back on if you use it.</li>
+    </ol>
+    <p style="color:var(--muted);font-size:14px">Imported RCS messages show as green "Text Message" bubbles. That is expected.</p>
+  </section>
+
+  <section class="card" id="c-run">
+    <div class="row" style="margin-top:0">
+      <b id="run-title">Ready.</b>
+      <button class="danger hidden" id="b-cancel" style="margin-left:auto">Stop</button>
+    </div>
+    <p id="run-error" class="err hidden"></p>
+    <details class="log" id="log-wrap">
+      <summary>Details</summary>
+      <pre id="log"></pre>
+    </details>
+  </section>
+</main>
+<footer>
+  <p>mv2ios is free and open source (AGPL-3.0). Nothing you download leaves this computer.
+  <span id="donate-line" class="hidden">If it saved your move to iPhone, you can <a id="donate2" target="_blank" rel="noopener">buy me a coffee</a>.</span></p>
+  <p>Close the mv2ios window on your computer to quit.</p>
+</footer>
+
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+let st = null;          // last /api/state
+let job = "";           // running job
+let selected = "";      // chosen backup path
+let checked = "";       // backup that passed a dry run with the current archive
+let lastDone = {};      // job -> result
+
+async function api(path, body) {
+  const r = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}) });
+  if (!r.ok) throw new Error((await r.text()).trim());
+}
+async function refresh() {
+  const r = await fetch("/api/state?archive=" + encodeURIComponent($("archive").value || ""));
+  st = await r.json();
+  if (!$("archive").value) $("archive").value = st.archive;
+  job = st.job || job;
+  render();
+}
+function show(el, on) { (typeof el === "string" ? $(el) : el).classList.toggle("hidden", !on); }
+function esc(s) { const d = document.createElement("div"); d.textContent = s; return d.innerHTML; }
+
+function render() {
+  if (!st) return;
+  $("version").textContent = st.version;
+  $("cookie-url").textContent = st.cookieURL;
+  if (st.donateURL) {
+    $("donate").href = $("donate2").href = st.donateURL;
+    show("donate", true); show("donate-line", true);
+  }
+  const busy = job !== "";
+  // Pair
+  $("c-pair").classList.toggle("done", st.paired);
+  $("s-pair").textContent = st.paired ? "Linked" : "";
+  const pairing = job === "pair";
+  show("pair-paired", st.paired && !pairing);
+  show("pair-idle", !st.paired && !pairing && $("paste-box").classList.contains("hidden"));
+  show("pair-wait", pairing);
+  // Export
+  $("c-export").classList.toggle("locked", !st.paired && st.conversations === 0);
+  $("c-export").classList.toggle("done", st.conversations > 0 && job !== "export");
+  $("s-export").textContent = st.conversations > 0 ? st.conversations + " conversations saved" : "";
+  $("b-export").disabled = busy || !st.paired;
+  $("b-export").textContent = st.conversations > 0 ? "Continue / update download" : "Download messages";
+  // Backups
+  const list = $("backups");
+  if (st.backups.length === 0) {
+    list.innerHTML = '<p class="err">No iPhone backups found. mv2ios looked in:<br>' + st.backupDirs.map(esc).join("<br>") + "</p>";
+    selected = "";
+  } else {
+    if (!st.backups.some(b => b.path === selected)) {
+      const usable = st.backups.filter(b => !b.encrypted);
+      selected = usable.length === 1 ? usable[0].path : "";
+    }
+    list.innerHTML = "";
+    for (const b of st.backups) {
+      const el = document.createElement("label");
+      el.className = "backup";
+      el.innerHTML = `<input type="radio" name="backup" ${b.encrypted ? "disabled" : ""} ${b.path === selected ? "checked" : ""}>
+        <div><b>${esc(b.device)}</b> · iOS ${esc(b.ios)} · ${esc(b.lastBackup)}
+        ${b.encrypted ? '<br><span class="err">Encrypted: not supported yet. Turn off "Encrypt local backup" and back up again.</span>' : ""}
+        <br><small>${esc(b.path)}</small></div>`;
+      el.querySelector("input").onchange = () => { selected = b.path; checked = ""; $("inject-result").innerHTML = ""; render(); };
+      list.appendChild(el);
+    }
+  }
+  const sel = st.backups.find(b => b.path === selected);
+  $("c-inject").classList.toggle("locked", st.conversations === 0);
+  $("b-check").disabled = busy || !selected || st.conversations === 0;
+  $("b-write").disabled = busy || !selected || checked !== selected;
+  $("b-write").classList.toggle("primary", checked === selected && !!selected);
+  show("b-undo", !!(sel && sel.canUndo));
+  $("b-undo").disabled = busy;
+  $("b-rescan").disabled = busy;
+  for (const b of ["b-pair", "b-pair-qr", "b-pair-paste", "b-unpair", "b-paste-go"]) $(b).disabled = busy;
+  // Run panel
+  show("b-cancel", busy);
+  const titles = { pair: "Linking to your phone…", export: "Downloading messages…", inject: "Working on the backup…", undo: "Undoing…", unpair: "Unlinking…" };
+  if (busy) $("run-title").textContent = titles[job] || "Working…";
+}
+
+function logLine(text) {
+  const pre = $("log");
+  const atEnd = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 20;
+  pre.textContent += text + "\n";
+  if (atEnd) pre.scrollTop = pre.scrollHeight;
+}
+
+function summary(items) {
+  return '<div class="summary">' + items.filter(i => i[0] !== undefined).map(([n, l]) => `<div><b>${n}</b><span>${esc(l)}</span></div>`).join("") + "</div>";
+}
+
+function onDone(name, data) {
+  $("run-title").textContent = "Finished.";
+  if (name === "pair") { show("emoji-box", false); show("qr-box", false); show("paste-box", false); }
+  if (name === "export" && data) {
+    let html = summary([[data.Conversations, "conversations saved"], [data.Messages, "messages"], [data.Media, "attachments"], [data.Skipped, "already saved earlier"]]);
+    const notes = [];
+    if (data.Previews) notes.push(`${data.Previews} attachments were only available as small previews. Tick "Retry photos saved only as previews" and download again to ask for them.`);
+    if (data.MediaFailed) notes.push(`${data.MediaFailed} attachments could not be downloaded; their messages were saved without them.`);
+    if (data.Partial && data.Partial.length) notes.push(`${data.Partial.length} conversations stopped early; their oldest messages may be missing.`);
+    if (data.Failed && data.Failed.length) notes.push(`${data.Failed.length} conversations failed and were not saved. Download again to retry them.`);
+    $("export-result").innerHTML = html + notes.map(n => `<div class="note">${esc(n)}</div>`).join("");
+  }
+  if (name === "inject" && data) {
+    const wrote = !!data.UndoDir;
+    let html = summary([[data.Messages, wrote ? "messages added" : "messages to add"], [data.Attachments, "attachments"], [data.Conversations, "conversations"], [data.NewChats, "new threads"], [data.Duplicates, "already on iPhone"]]);
+    if (data.MissingAttachments) html += `<div class="note">${data.MissingAttachments} attachments were missing from the download and will be left out.</div>`;
+    if (data.SkippedConversations) html += `<div class="note">${data.SkippedConversations} conversations had no messages or no usable phone number and were skipped.</div>`;
+    if (wrote) {
+      html += '<p class="okmsg"><b>The backup is ready.</b> Go to step 4 to restore it to the iPhone.</p>';
+      checked = "";
+    } else {
+      html += "<p>Nothing has been changed yet. Click <b>Add to backup</b> to write these messages into the backup. The original files are saved first so you can undo.</p>";
+      checked = selected;
+    }
+    $("inject-result").innerHTML = html;
+  }
+  if (name === "undo") { $("inject-result").innerHTML = '<p class="okmsg">The backup is back the way it was.</p>'; checked = ""; }
+}
+
+function connect() {
+  const es = new EventSource("/api/events");
+  let first = true;
+  es.onopen = () => { if (!first) $("log").textContent = ""; first = false; };
+  es.onmessage = m => {
+    const ev = JSON.parse(m.data);
+    if (ev.job && ev.kind !== "done" && ev.kind !== "error") job = ev.job;
+    switch (ev.kind) {
+      case "log": logLine(ev.text); $("pair-msg").textContent = job === "pair" ? ev.text : $("pair-msg").textContent; break;
+      case "emoji": $("emoji").textContent = ev.text; show("emoji-box", true); $("pair-msg").textContent = "Approve the link on your phone."; break;
+      case "qr": $("qr").src = ev.text; show("qr-box", true); break;
+      case "paste": $("paste-why").textContent = "The browser sign-in did not work: " + ev.text + ". You can copy the sign-in by hand:"; show("paste-box", true); break;
+      case "done": job = ""; lastDone[ev.job] = ev.data; onDone(ev.job, ev.data); refresh(); break;
+      case "error":
+        job = ""; logLine("Error: " + ev.text);
+        $("run-title").textContent = "Stopped with a problem.";
+        $("run-error").textContent = ev.text; show("run-error", true);
+        if (ev.job === "pair") { show("emoji-box", false); show("qr-box", false); }
+        refresh(); break;
+    }
+    render();
+  };
+}
+
+async function run(name, path, body) {
+  show("run-error", false);
+  $("log").textContent = "";
+  $("log-wrap").open = true;
+  try { job = name; render(); await api(path, body); }
+  catch (e) { job = ""; $("run-error").textContent = e.message; show("run-error", true); render(); }
+}
+
+$("b-pair").onclick = () => { $("pair-msg").textContent = "A browser window is opening. Sign in, wait for Google Messages to load, then close that window."; run("pair", "/api/pair", { method: "browser" }); };
+$("b-pair-qr").onclick = () => { $("pair-msg").textContent = "Getting a QR code…"; run("pair", "/api/pair", { method: "qr" }); };
+$("b-pair-paste").onclick = () => { $("paste-why").textContent = ""; show("paste-box", true); render(); };
+$("b-paste-cancel").onclick = () => { show("paste-box", false); render(); };
+$("b-paste-go").onclick = () => {
+  const text = $("pasted").value.trim();
+  if (!text) return;
+  show("paste-box", false); $("pasted").value = "";
+  $("pair-msg").textContent = "Contacting your phone…";
+  run("pair", "/api/pair", { method: "paste", pasted: text });
+};
+$("b-unpair").onclick = () => { if (confirm("Remove this computer from the phone's paired devices and delete the sign-in from this computer?")) run("unpair", "/api/unpair"); };
+$("b-export").onclick = () => run("export", "/api/export", { archive: $("archive").value.trim(), refreshList: $("o-refresh").checked, retryPreviews: $("o-previews").checked });
+$("archive").onchange = () => { checked = ""; refresh(); };
+$("b-rescan").onclick = refresh;
+$("b-check").onclick = () => run("inject", "/api/inject", { archive: $("archive").value.trim(), backup: selected, write: false });
+$("b-write").onclick = () => {
+  if (!confirm("Add the messages to this backup now? The original files are saved first, so you can undo.")) return;
+  run("inject", "/api/inject", { archive: $("archive").value.trim(), backup: selected, write: true });
+};
+$("b-undo").onclick = () => { if (confirm("Put this backup back the way it was before mv2ios changed it?")) run("undo", "/api/undo", { backup: selected }); };
+$("b-cancel").onclick = () => api("/api/cancel").catch(() => {});
+
+refresh().then(connect);
+</script>
+</body>
+</html>

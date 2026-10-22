@@ -1,0 +1,5 @@
+dist/
+mv2ios-archive/
+*.exe
+/mv2ios
+*.log
