@@ -20,7 +20,10 @@ type Options struct {
 	DryRun bool
 	// UndoRoot is where the original files are kept so Undo can put them back.
 	UndoRoot string
-	Logf     func(format string, args ...any)
+	// SelfAddresses are extra numbers or email addresses that belong to the
+	// phone's owner, on top of the ones found automatically.
+	SelfAddresses []string
+	Logf          func(format string, args ...any)
 }
 
 type Result struct {
@@ -29,8 +32,17 @@ type Result struct {
 	SkippedConversations int
 	Messages             int
 	Duplicates           int
-	Attachments          int
-	MissingAttachments   int
+	// Repaired counts messages from an earlier mv2ios run that showed as
+	// empty bubbles and now have their text fixed.
+	Repaired int
+	// Moved counts messages from an earlier mv2ios run that were in the
+	// wrong chat or marked with the wrong sender, and have been moved.
+	Moved int
+	// RemovedChats counts group chats from an earlier run that were left
+	// empty by the move and deleted.
+	RemovedChats       int
+	Attachments        int
+	MissingAttachments int
 	// UndoDir is empty when nothing was written to the backup.
 	UndoDir string
 }
@@ -198,39 +210,31 @@ func Inject(backupDir, archiveDir string, opts Options) (Result, error) {
 		return res, fmt.Errorf("open Messages database: %w", err)
 	}
 
-	owner := ownerNumber(convs)
+	ppl := identify(convs, opts.SelfAddresses)
+	for _, addr := range ppl.detected {
+		logf("Treating %s as you: its messages count as sent by you, and it is not added as a group member.", addr)
+	}
+	owner := ppl.owner
 	var copies []pendingCopy
+	var rooms []string
 	for _, conv := range convs {
-		numbers := map[string]string{} // participant ID -> normalized number
-		var members []string
-		seen := map[string]bool{}
-		for _, p := range conv.Others() {
-			n := normalizeNumber(p.Number, owner)
-			if n == "" {
-				continue
-			}
-			numbers[p.ID] = n
-			if !seen[n] {
-				seen[n] = true
-				members = append(members, n)
-			}
-		}
-		if len(members) == 0 || len(conv.Messages) == 0 {
+		cp := ppl.plan(conv)
+		rooms = append(rooms, groupRoom(conv.ID))
+		if len(cp.members) == 0 || len(conv.Messages) == 0 {
 			res.SkippedConversations++
 			continue
 		}
 
-		isGroup := conv.IsGroup || len(members) > 1
 		var chatID, directHandle int64
 		var roomName string
 		var isNew bool
-		if isGroup {
+		if cp.isGroup {
 			var chat groupChat
-			if chat, isNew, err = sms.groupChatFor(conv.ID, groupDisplayName(conv), members); err != nil {
+			if chat, isNew, err = sms.groupChatFor(conv.ID, groupDisplayName(conv), cp.members); err != nil {
 				return res, err
 			}
 			chatID, roomName = chat.id, chat.roomName
-		} else if chatID, directHandle, isNew, err = sms.directChat(members[0]); err != nil {
+		} else if chatID, directHandle, isNew, err = sms.directChat(cp.members[0]); err != nil {
 			return res, err
 		}
 		existing, err := sms.existingMessages(chatID)
@@ -240,68 +244,76 @@ func Inject(backupDir, archiveDir string, opts Options) (Result, error) {
 
 		added := 0
 		for _, msg := range conv.Messages {
+			fromMe := cp.fromMe(msg)
 			guid := derivedGUID("message", msg.ID)
+			usable, missing := usableAttachments(archiveDir, msg)
+			attGUIDs := make([]string, len(usable))
+			for i := range usable {
+				attGUIDs[i] = derivedGUID("attachment", fmt.Sprintf("%s#%d", msg.ID, i))
+			}
+			handleID := directHandle
+			if cp.isGroup {
+				handleID = 0
+				if !fromMe {
+					sender, _ := cp.sender(msg)
+					if handleID, err = sms.handle(sender); err != nil {
+						return res, err
+					}
+				}
+			}
 			dup, err := sms.hasMessageGUID(guid)
 			if err != nil {
 				return res, err
 			}
-			if dup || existing.contains(msg.FromMe, msg.Text, msg.Timestamp) {
+			if dup {
+				moved, err := sms.place(guid, placement{chatID: chatID, handleID: handleID, roomName: roomName, fromMe: fromMe})
+				if err != nil {
+					return res, err
+				}
+				fixed, err := sms.repairBody(guid, msg.Text, attGUIDs)
+				if err != nil {
+					return res, err
+				}
+				switch {
+				case moved:
+					res.Moved++
+				case fixed:
+					res.Repaired++
+				default:
+					res.Duplicates++
+				}
+				continue
+			}
+			if existing.contains(fromMe, msg.Text, msg.Timestamp) {
 				res.Duplicates++
 				continue
 			}
-			var usable []archive.Attachment
-			for _, a := range msg.Attachments {
-				if a.Path == "" {
-					res.MissingAttachments++
-					continue
-				}
-				if _, err := os.Stat(filepath.Join(archiveDir, filepath.FromSlash(a.Path))); err != nil {
-					res.MissingAttachments++
-					continue
-				}
-				usable = append(usable, a)
-			}
+			res.MissingAttachments += missing
 			if msg.Text == "" && msg.Subject == "" && len(usable) == 0 {
 				continue
 			}
-
-			handleID := directHandle
-			switch {
-			case msg.FromMe && isGroup:
-				handleID = 0
-			case !msg.FromMe && isGroup:
-				sender, ok := numbers[msg.SenderID]
-				if !ok {
-					// The sender has since left the group; attribute the
-					// message to a current member rather than drop it.
-					sender = members[0]
-				}
-				if handleID, err = sms.handle(sender); err != nil {
-					return res, err
-				}
-			}
 			rowID, err := sms.addMessage(newMessage{
-				guid:        guid,
-				chatID:      chatID,
-				handleID:    handleID,
-				roomName:    roomName,
-				fromMe:      msg.FromMe,
-				at:          msg.Timestamp,
-				text:        msg.Text,
-				subject:     msg.Subject,
-				ownerID:     owner,
-				attachments: len(usable),
+				guid:            guid,
+				chatID:          chatID,
+				handleID:        handleID,
+				roomName:        roomName,
+				fromMe:          fromMe,
+				at:              msg.Timestamp,
+				text:            msg.Text,
+				subject:         msg.Subject,
+				ownerID:         owner,
+				attachmentGUIDs: attGUIDs,
 			})
 			if err != nil {
 				return res, err
 			}
 			for i, a := range usable {
-				src := filepath.Join(archiveDir, filepath.FromSlash(a.Path))
+				src := archivePath(archiveDir, a.Path)
 				digest, size, err := sha1File(src)
 				if err != nil {
 					return res, err
 				}
-				attGUID := derivedGUID("attachment", fmt.Sprintf("%s#%d", msg.ID, i))
+				attGUID := attGUIDs[i]
 				name := attachmentName(a)
 				devicePath := attachmentDevicePath(attGUID, name)
 				id, err := man.addFile(mediaDomain, devicePath, size, digest)
@@ -316,7 +328,7 @@ func Inject(backupDir, archiveDir string, opts Options) (Result, error) {
 					name:       name,
 					mimeType:   a.MimeType,
 					size:       size,
-					outgoing:   msg.FromMe,
+					outgoing:   fromMe,
 					at:         msg.Timestamp,
 				})
 				if err != nil {
@@ -334,6 +346,9 @@ func Inject(backupDir, archiveDir string, opts Options) (Result, error) {
 			}
 			logf("%s: %d messages", conv.Name, added)
 		}
+	}
+	if res.RemovedChats, err = sms.removeEmptyGroups(rooms); err != nil {
+		return res, err
 	}
 
 	if err := sms.finish(); err != nil {
@@ -362,7 +377,7 @@ func Inject(backupDir, archiveDir string, opts Options) (Result, error) {
 	if err := closeSQLite(manifestDB); err != nil {
 		return res, err
 	}
-	if opts.DryRun || res.Messages == 0 {
+	if opts.DryRun || (res.Messages == 0 && res.Repaired == 0 && res.Moved == 0 && res.RemovedChats == 0) {
 		return res, nil
 	}
 

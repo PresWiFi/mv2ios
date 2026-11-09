@@ -5,12 +5,15 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/csv"
 	"errors"
 	"flag"
 	"fmt"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/mdp/qrterminal/v3"
@@ -31,6 +34,7 @@ Steps, in order:
   mv2ios export     Download every conversation and attachment to this computer
   mv2ios backups    List the iPhone backups found on this computer
   mv2ios inject     Add the downloaded conversations to an iPhone backup
+  mv2ios verify     Check a backup against the export, message by message
   mv2ios undo       Put a backup back the way it was before inject
   mv2ios unpair     Remove this computer from the Android phone's paired devices
 
@@ -79,6 +83,8 @@ func main() {
 		err = backups()
 	case "inject":
 		err = inject(args)
+	case "verify":
+		err = verify(args)
 	case "undo":
 		err = undo(args)
 	case "gui":
@@ -285,6 +291,7 @@ func inject(args []string) error {
 	backup := fs.String("backup", "", "iPhone backup folder (default: the only backup on this computer)")
 	archiveDir := fs.String("archive", "mv2ios-archive", "folder written by export")
 	write := fs.Bool("write", false, "actually change the backup; without this, only report what would change")
+	me := fs.String("me", "", meHelp)
 	fs.Parse(args)
 
 	dir, err := pickBackup(*backup)
@@ -292,7 +299,7 @@ func inject(args []string) error {
 		return err
 	}
 	fmt.Println("Backup:", dir)
-	res, err := iosbackup.Inject(dir, *archiveDir, iosbackup.Options{DryRun: !*write, UndoRoot: undoRoot(), Logf: logf})
+	res, err := iosbackup.Inject(dir, *archiveDir, iosbackup.Options{DryRun: !*write, UndoRoot: undoRoot(), SelfAddresses: splitList(*me), Logf: logf})
 	if err != nil {
 		return err
 	}
@@ -303,6 +310,15 @@ func inject(args []string) error {
 	fmt.Printf("\n%s %d messages and %d attachments across %d conversations (%d of them new threads).\n",
 		verb, res.Messages, res.Attachments, res.Conversations, res.NewChats)
 	fmt.Printf("%d messages were already on the iPhone and were skipped.\n", res.Duplicates)
+	if res.Repaired > 0 {
+		fmt.Printf("%d messages from an earlier import had blank bubbles and were fixed.\n", res.Repaired)
+	}
+	if res.Moved > 0 {
+		fmt.Printf("%d messages from an earlier import were in the wrong chat or had the wrong sender and were moved.\n", res.Moved)
+	}
+	if res.RemovedChats > 0 {
+		fmt.Printf("%d group chats from an earlier import were left empty by that and removed.\n", res.RemovedChats)
+	}
 	if res.MissingAttachments > 0 {
 		fmt.Printf("%d attachments were missing from the archive and were left out.\n", res.MissingAttachments)
 	}
@@ -317,6 +333,143 @@ func inject(args []string) error {
 		fmt.Println("To put the backup back as it was: mv2ios undo -backup", dir)
 	}
 	return nil
+}
+
+const meHelp = "extra phone numbers or email addresses that are yours, separated by commas (your own number and email addresses under your name are found automatically)"
+
+func splitList(s string) []string {
+	var out []string
+	for _, part := range strings.Split(s, ",") {
+		if part = strings.TrimSpace(part); part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
+}
+
+func verify(args []string) error {
+	fs := flag.NewFlagSet("verify", flag.ExitOnError)
+	backup := fs.String("backup", "", "iPhone backup folder (default: the only backup on this computer)")
+	archiveDir := fs.String("archive", "mv2ios-archive", "folder written by export")
+	me := fs.String("me", "", meHelp)
+	all := fs.Bool("all", false, "list every conversation, not only the ones with problems")
+	csvPath := fs.String("csv", "", "also write a row per conversation to this CSV file")
+	fs.Parse(args)
+
+	dir, err := pickBackup(*backup)
+	if err != nil {
+		return err
+	}
+	fmt.Println("Backup: ", dir)
+	fmt.Println("Archive:", *archiveDir)
+	res, err := iosbackup.Verify(dir, *archiveDir, iosbackup.VerifyOptions{SelfAddresses: splitList(*me)})
+	if err != nil {
+		return err
+	}
+	for _, addr := range res.SelfAddresses {
+		fmt.Printf("Treating %s as you.\n", addr)
+	}
+	t := res.Totals
+	fmt.Printf("\n%d messages should be on the iPhone.\n", t.Expected)
+	fmt.Printf("  %7d imported and in the right place\n", t.Imported)
+	fmt.Printf("  %7d were already on the iPhone\n", t.AlreadyThere)
+	for _, line := range []struct {
+		n    int
+		what string
+	}{
+		{t.Missing, "missing"},
+		{t.WrongChat, "in the wrong conversation"},
+		{t.WrongDirection, "shown as received when you sent them, or the other way round"},
+		{t.WrongSender, "shown as sent by the wrong person in a group"},
+		{t.BlankBubble, "show as blank bubbles"},
+		{t.MissingAttachments, "attachments missing from the backup"},
+	} {
+		if line.n > 0 {
+			fmt.Printf("  %7d %s\n", line.n, line.what)
+		}
+	}
+	if t.UnknownSender > 0 {
+		fmt.Printf("\n%d group messages came from someone no longer listed in their group;\nthey show as sent by another member.\n", t.UnknownSender)
+	}
+
+	var shown []iosbackup.ConvReport
+	skipped := 0
+	for _, r := range res.Conversations {
+		if r.Skipped != "" {
+			skipped++
+		}
+		if *all || r.Problems() > 0 {
+			shown = append(shown, r)
+		}
+	}
+	sort.SliceStable(shown, func(i, j int) bool { return shown[i].Problems() > shown[j].Problems() })
+	if len(shown) > 0 {
+		fmt.Printf("\n%-32s %5s %7s %7s %7s %7s %7s %7s\n", "Conversation", "Group", "Expect", "OK", "Missing", "Chat", "Sender", "Other")
+		for _, r := range shown {
+			group := ""
+			if r.Group {
+				group = fmt.Sprint(r.Members + 1)
+			}
+			fmt.Printf("%-32s %5s %7d %7d %7d %7d %7d %7d\n", clip(convLabel(r), 32), group, r.Expected, r.Imported+r.AlreadyThere,
+				r.Missing, r.WrongChat, r.WrongDirection+r.WrongSender, r.BlankBubble+r.MissingAttachments)
+		}
+		fmt.Println("\nGroup = people in the chat including you. Sender = wrong direction or wrong group member.")
+		fmt.Println("Other = blank bubbles and missing attachments.")
+	}
+	if skipped > 0 {
+		fmt.Printf("\n%d conversations are not imported (no messages, or no one but you in them).\n", skipped)
+	}
+	if *csvPath != "" {
+		if err := writeVerifyCSV(*csvPath, res); err != nil {
+			return err
+		}
+		fmt.Println("Wrote", *csvPath)
+	}
+	problems := t.Problems()
+	if problems == 0 {
+		fmt.Println("\nEverything in the export is on the iPhone as it should be.")
+		return nil
+	}
+	if t.WrongChat+t.WrongDirection+t.WrongSender+t.BlankBubble > 0 {
+		fmt.Println("\nRunning inject again fixes messages from an earlier import that are in the wrong place or blank.")
+	}
+	return fmt.Errorf("%d problems found", problems)
+}
+
+func convLabel(r iosbackup.ConvReport) string {
+	if r.Name != "" {
+		return r.Name
+	}
+	return "(conversation " + r.ID + ")"
+}
+
+func clip(s string, n int) string {
+	if r := []rune(s); len(r) > n {
+		return string(r[:n-1]) + "…"
+	}
+	return s
+}
+
+func writeVerifyCSV(path string, res iosbackup.VerifyResult) error {
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	w := csv.NewWriter(f)
+	w.Write([]string{"id", "name", "group", "members", "expected", "imported", "already_there", "missing", "wrong_chat",
+		"wrong_direction", "wrong_sender", "blank_bubble", "missing_attachments", "from_self_entry", "unknown_sender", "dropped", "skipped"})
+	for _, r := range res.Conversations {
+		w.Write([]string{r.ID, r.Name, strconv.FormatBool(r.Group), strconv.Itoa(r.Members), strconv.Itoa(r.Expected), strconv.Itoa(r.Imported),
+			strconv.Itoa(r.AlreadyThere), strconv.Itoa(r.Missing), strconv.Itoa(r.WrongChat), strconv.Itoa(r.WrongDirection),
+			strconv.Itoa(r.WrongSender), strconv.Itoa(r.BlankBubble), strconv.Itoa(r.MissingAttachments), strconv.Itoa(r.FromSelfEntry),
+			strconv.Itoa(r.UnknownSender), strings.Join(r.Dropped, " "), r.Skipped})
+	}
+	w.Flush()
+	if err := w.Error(); err != nil {
+		f.Close()
+		return err
+	}
+	return f.Close()
 }
 
 func undo(args []string) error {
