@@ -53,6 +53,9 @@ ol.steps { padding-left: 20px; margin: 8px 0; }
 .summary div { background: var(--bg); border-radius: 8px; padding: 10px; }
 .summary b { display: block; font-size: 20px; }
 .summary span { color: var(--muted); font-size: 13px; }
+.verify { width: 100%; border-collapse: collapse; margin-top: 12px; font-size: 13px; display: block; overflow-x: auto; }
+.verify th, .verify td { padding: 4px 8px; text-align: right; border-bottom: 1px solid var(--line, #ddd); white-space: nowrap; }
+.verify th:first-child, .verify td:first-child { text-align: left; white-space: normal; }
 details.log { margin-top: 14px; }
 details.log summary { cursor: pointer; color: var(--muted); font-size: 14px; }
 pre#log { background: var(--log); color: var(--log-text); padding: 12px; border-radius: 8px; max-height: 260px; overflow: auto; font-size: 12px; white-space: pre-wrap; word-break: break-word; margin: 8px 0 0; }
@@ -136,6 +139,7 @@ code { font-family: ui-monospace, Consolas, monospace; font-size: 13px; }
       <button id="b-rescan">Look for backups again</button>
       <button class="primary" id="b-check">Check what will be added</button>
       <button id="b-write" disabled>Add to backup</button>
+      <button id="b-verify">Verify against download</button>
       <button class="danger hidden" id="b-undo">Undo changes to this backup</button>
     </div>
     <div id="inject-result"></div>
@@ -242,13 +246,14 @@ function render() {
   $("b-check").disabled = busy || !selected || st.conversations === 0;
   $("b-write").disabled = busy || !selected || checked !== selected;
   $("b-write").classList.toggle("primary", checked === selected && !!selected);
+  $("b-verify").disabled = busy || !selected || st.conversations === 0;
   show("b-undo", !!(sel && sel.canUndo));
   $("b-undo").disabled = busy;
   $("b-rescan").disabled = busy;
   for (const b of ["b-pair", "b-pair-qr", "b-pair-paste", "b-unpair", "b-paste-go"]) $(b).disabled = busy;
   // Run panel
   show("b-cancel", busy);
-  const titles = { pair: "Linking to your phone…", export: "Downloading messages…", inject: "Working on the backup…", undo: "Undoing…", unpair: "Unlinking…" };
+  const titles = { pair: "Linking to your phone…", export: "Downloading messages…", inject: "Working on the backup…", verify: "Checking the backup…", undo: "Undoing…", unpair: "Unlinking…" };
   if (busy) $("run-title").textContent = titles[job] || "Working…";
 }
 
@@ -278,6 +283,9 @@ function onDone(name, data) {
   if (name === "inject" && data) {
     const wrote = !!data.UndoDir;
     let html = summary([[data.Messages, wrote ? "messages added" : "messages to add"], [data.Attachments, "attachments"], [data.Conversations, "conversations"], [data.NewChats, "new threads"], [data.Duplicates, "already on iPhone"]]);
+    if (data.Repaired) html += `<div class="note">${data.Repaired} messages from an earlier import showed as blank bubbles and ${wrote ? "were" : "will be"} fixed.</div>`;
+    if (data.Moved) html += `<div class="note">${data.Moved} messages from an earlier import were in the wrong chat or had the wrong sender and ${wrote ? "were" : "will be"} moved.</div>`;
+    if (data.RemovedChats) html += `<div class="note">${data.RemovedChats} group chats from an earlier import ${wrote ? "were" : "will be"} left empty by that and removed.</div>`;
     if (data.MissingAttachments) html += `<div class="note">${data.MissingAttachments} attachments were missing from the download and will be left out.</div>`;
     if (data.SkippedConversations) html += `<div class="note">${data.SkippedConversations} conversations had no messages or no usable phone number and were skipped.</div>`;
     if (wrote) {
@@ -286,6 +294,23 @@ function onDone(name, data) {
     } else {
       html += "<p>Nothing has been changed yet. Click <b>Add to backup</b> to write these messages into the backup. The original files are saved first so you can undo.</p>";
       checked = selected;
+    }
+    $("inject-result").innerHTML = html;
+  }
+  if (name === "verify" && data) {
+    const t = data.Totals;
+    let html = summary([[t.Expected, "should be on iPhone"], [t.Imported, "imported correctly"], [t.AlreadyThere, "were already there"],
+      [t.Missing, "missing"], [t.WrongChat, "in the wrong chat"], [t.WrongDirection + t.WrongSender, "wrong sender"],
+      [t.BlankBubble, "blank bubbles"], [t.MissingAttachments, "attachments missing"]]);
+    for (const a of data.SelfAddresses || []) html += `<div class="note">Treated ${esc(a)} as you.</div>`;
+    const rows = (data.Conversations || []).slice(0, 50);
+    if (rows.length) {
+      html += '<table class="verify"><tr><th>Conversation</th><th>People</th><th>Expected</th><th>OK</th><th>Missing</th><th>Wrong chat</th><th>Wrong sender</th><th>Other</th></tr>' +
+        rows.map(r => `<tr><td>${esc(r.Name || "(conversation " + r.ID + ")")}</td><td>${r.Group ? r.Members + 1 : 2}</td><td>${r.Expected}</td><td>${r.Imported + r.AlreadyThere}</td><td>${r.Missing}</td><td>${r.WrongChat}</td><td>${r.WrongDirection + r.WrongSender}</td><td>${r.BlankBubble + r.MissingAttachments}</td></tr>`).join("") + "</table>";
+      if (data.Conversations.length > rows.length) html += `<p>${data.Conversations.length - rows.length} more conversations have problems. Run "mv2ios verify -all -csv report.csv" for the full list.</p>`;
+      if (t.WrongChat + t.WrongDirection + t.WrongSender + t.BlankBubble) html += "<p>Click <b>Check what will be added</b>, then <b>Add to backup</b>, to fix messages from an earlier import that are in the wrong place or blank.</p>";
+    } else {
+      html += '<p class="okmsg"><b>Everything in the download is in this backup as it should be.</b></p>';
     }
     $("inject-result").innerHTML = html;
   }
@@ -344,6 +369,7 @@ $("b-write").onclick = () => {
   if (!confirm("Add the messages to this backup now? The original files are saved first, so you can undo.")) return;
   run("inject", "/api/inject", { archive: $("archive").value.trim(), backup: selected, write: true });
 };
+$("b-verify").onclick = () => run("verify", "/api/verify", { archive: $("archive").value.trim(), backup: selected });
 $("b-undo").onclick = () => { if (confirm("Put this backup back the way it was before mv2ios changed it?")) run("undo", "/api/undo", { backup: selected }); };
 $("b-cancel").onclick = () => api("/api/cancel").catch(() => {});
 

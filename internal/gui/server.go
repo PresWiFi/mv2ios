@@ -17,6 +17,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -82,6 +83,7 @@ func Run(ctx context.Context, cfg Config) error {
 	mux.HandleFunc("POST /api/pair", s.pair)
 	mux.HandleFunc("POST /api/export", s.export)
 	mux.HandleFunc("POST /api/inject", s.inject)
+	mux.HandleFunc("POST /api/verify", s.verify)
 	mux.HandleFunc("POST /api/undo", s.undo)
 	mux.HandleFunc("POST /api/unpair", s.unpair)
 	mux.HandleFunc("POST /api/cancel", s.cancelJob)
@@ -413,6 +415,37 @@ func (s *server) inject(w http.ResponseWriter, r *http.Request) {
 	s.start(w, "inject", func(ctx context.Context) (any, error) {
 		s.logf("Backup: %s", req.Backup)
 		return iosbackup.Inject(req.Backup, req.Archive, iosbackup.Options{DryRun: !req.Write, UndoRoot: s.cfg.UndoRoot, Logf: s.logf})
+	})
+}
+
+func (s *server) verify(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Archive string `json:"archive"`
+		Backup  string `json:"backup"`
+	}
+	if err := readJSON(w, r, &req); err != nil || req.Backup == "" || req.Archive == "" {
+		http.Error(w, "choose a backup", http.StatusBadRequest)
+		return
+	}
+	s.start(w, "verify", func(ctx context.Context) (any, error) {
+		s.logf("Checking %s against %s", req.Backup, req.Archive)
+		res, err := iosbackup.Verify(req.Backup, req.Archive, iosbackup.VerifyOptions{})
+		if err != nil {
+			return nil, err
+		}
+		for _, addr := range res.SelfAddresses {
+			s.logf("Treating %s as you.", addr)
+		}
+		// Send only the conversations worth showing; the full list can be large.
+		var shown []iosbackup.ConvReport
+		for _, c := range res.Conversations {
+			if c.Problems() > 0 {
+				shown = append(shown, c)
+			}
+		}
+		sort.SliceStable(shown, func(i, j int) bool { return shown[i].Problems() > shown[j].Problems() })
+		res.Conversations = shown
+		return res, nil
 	})
 }
 

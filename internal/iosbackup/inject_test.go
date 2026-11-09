@@ -262,6 +262,29 @@ func TestInjectAndUndo(t *testing.T) {
 		t.Errorf("second run = %+v, want no new messages and 5 duplicates", again)
 	}
 
+	// Every imported message needs attributedBody or iOS shows a blank bubble.
+	// Blank one out, as an earlier mv2ios version left them, and check a new
+	// run would repair it.
+	db, err = openSQLite(smsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var blank int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM message WHERE attributedBody IS NULL AND guid != 'EXISTING'`).Scan(&blank); err != nil || blank != 0 {
+		t.Errorf("%d messages have no attributedBody (%v)", blank, err)
+	}
+	if _, err := db.Exec(`UPDATE message SET attributedBody = NULL WHERE ROWID = (SELECT MIN(ROWID) FROM message WHERE guid != 'EXISTING')`); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+	repair, err := Inject(backup, arch, Options{DryRun: true, UndoRoot: undoRoot})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repair.Repaired != 1 || repair.Duplicates != 4 {
+		t.Errorf("repair run = %+v, want 1 repaired and 4 duplicates", repair)
+	}
+
 	latest, err := LatestUndo(undoRoot, filepath.Base(backup))
 	if err != nil || latest != res.UndoDir {
 		t.Fatalf("LatestUndo = %q, %v; want %q", latest, err, res.UndoDir)

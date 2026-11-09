@@ -55,6 +55,8 @@ type smsDB struct {
 
 	handles map[string]int64
 	groups  map[string]groupChat
+	// membersByStyle caches chat members for Verify, which never writes.
+	membersByStyle map[int]map[int64][]string
 }
 
 type groupChat struct {
@@ -309,24 +311,45 @@ func (s *smsDB) directChat(contact string) (chatID, handleID int64, isNew bool, 
 	return
 }
 
+// groupRoom is the room name mv2ios gives the group chat it creates for a
+// source conversation. Group identifiers are "chat" followed by a long
+// number; deriving it from the conversation lets a second import find the
+// same chat.
+func groupRoom(sourceID string) string {
+	sum := sha1.Sum([]byte("mv2ios:group:" + sourceID))
+	var n uint64
+	for _, b := range sum[:8] {
+		n = n<<8 | uint64(b)
+	}
+	return fmt.Sprintf("chat%018d", n%1e18)
+}
+
 // groupChatFor finds or creates the group chat with exactly these members.
 func (s *smsDB) groupChatFor(sourceID, displayName string, members []string) (chat groupChat, isNew bool, err error) {
 	key := groupKey(members)
 	if existing, ok := s.groups[key]; ok {
 		return existing, false, nil
 	}
-	// Group identifiers are "chat" followed by a long number; derive it from
-	// the source conversation so a second import finds the same chat.
-	sum := sha1.Sum([]byte("mv2ios:group:" + sourceID))
-	var n uint64
-	for _, b := range sum[:8] {
-		n = n<<8 | uint64(b)
-	}
-	room := fmt.Sprintf("chat%018d", n%1e18)
+	room := groupRoom(sourceID)
 	guid := s.guidPrefix + ";+;" + room
 	err = s.tx.QueryRow(`SELECT ROWID FROM chat WHERE guid = ?`, guid).Scan(&chat.id)
 	chat.roomName = room
-	if errors.Is(err, sql.ErrNoRows) {
+	if err == nil {
+		// mv2ios made this chat in an earlier run, possibly with the wrong
+		// members (older versions counted the owner as one); set them again.
+		if _, err = s.tx.Exec(`DELETE FROM chat_handle_join WHERE chat_id = ?`, chat.id); err != nil {
+			return
+		}
+		for _, member := range members {
+			var handleID int64
+			if handleID, err = s.handle(member); err != nil {
+				return
+			}
+			if err = s.joinHandle(chat.id, handleID); err != nil {
+				return
+			}
+		}
+	} else if errors.Is(err, sql.ErrNoRows) {
 		isNew = true
 		values := map[string]any{
 			"guid":            guid,
@@ -407,6 +430,36 @@ func (s *smsDB) hasMessageGUID(guid string) (bool, error) {
 	return n > 0, err
 }
 
+func partCount(text string, attachmentGUIDs []string) int {
+	n := len(attachmentGUIDs)
+	if text != "" {
+		n++
+	}
+	return n
+}
+
+// repairBody fills in attributedBody on a message an earlier version of
+// mv2ios imported without one; those show as empty bubbles on the phone.
+// It reports whether the row needed fixing.
+func (s *smsDB) repairBody(guid, text string, attachmentGUIDs []string) (bool, error) {
+	if !s.columns["message"]["attributedBody"] {
+		return false, nil
+	}
+	set := `attributedBody = ?`
+	args := []any{attributedBody(text, attachmentGUIDs)}
+	if s.columns["message"]["part_count"] {
+		set += `, part_count = ?`
+		args = append(args, partCount(text, attachmentGUIDs))
+	}
+	args = append(args, guid)
+	res, err := s.tx.Exec(`UPDATE message SET `+set+` WHERE guid = ? AND attributedBody IS NULL`, args...)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n > 0, err
+}
+
 type newMessage struct {
 	guid     string
 	chatID   int64
@@ -417,16 +470,129 @@ type newMessage struct {
 	text     string
 	subject  string
 	ownerID  string
-	// attachments are counted before the row is written because the text
-	// carries one placeholder for each.
-	attachments int
+	// attachmentGUIDs are known before the row is written because the text
+	// carries one placeholder for each, linked to the attachment by GUID.
+	attachmentGUIDs []string
+}
+
+// directionValues are the columns that differ between sent and received messages.
+func directionValues(fromMe bool, date int64) map[string]any {
+	if fromMe {
+		return map[string]any{"is_sent": 1, "is_delivered": 1, "date_delivered": date, "is_read": 0, "date_read": 0}
+	}
+	// Imported history is marked read; otherwise the phone would show
+	// every old message as new.
+	return map[string]any{"is_sent": 0, "is_delivered": 0, "date_delivered": 0, "is_read": 1, "date_read": date}
+}
+
+// placement is where a message belongs: its chat, and who sent it.
+type placement struct {
+	chatID   int64
+	handleID int64
+	roomName string
+	fromMe   bool
+}
+
+// place moves a message imported by an earlier run to where it belongs, if
+// it is somewhere else. Older versions put the owner's own messages in as
+// received ones, and some one-to-one chats into made-up groups.
+func (s *smsDB) place(guid string, want placement) (bool, error) {
+	var rowID, handleID, date int64
+	var fromMe bool
+	var chatID sql.NullInt64
+	err := s.tx.QueryRow(`
+		SELECT m.ROWID, m.handle_id, m.is_from_me, m.date,
+			(SELECT chat_id FROM chat_message_join WHERE message_id = m.ROWID ORDER BY chat_id LIMIT 1)
+		FROM message m WHERE m.guid = ?`, guid).Scan(&rowID, &handleID, &fromMe, &date, &chatID)
+	if err != nil {
+		return false, err
+	}
+	if chatID.Int64 == want.chatID && handleID == want.handleID && fromMe == want.fromMe {
+		return false, nil
+	}
+	values := directionValues(want.fromMe, date)
+	values["handle_id"] = want.handleID
+	values["is_from_me"] = want.fromMe
+	values["cache_roomnames"] = nil
+	if want.roomName != "" {
+		values["cache_roomnames"] = want.roomName
+	}
+	var cols []string
+	for col := range values {
+		if s.columns["message"][col] {
+			cols = append(cols, col)
+		}
+	}
+	sort.Strings(cols)
+	sets := make([]string, len(cols))
+	args := make([]any, len(cols), len(cols)+1)
+	for i, col := range cols {
+		sets[i] = col + " = ?"
+		args[i] = values[col]
+		if b, ok := args[i].(bool); ok {
+			args[i] = boolInt(b)
+		}
+	}
+	if _, err := s.tx.Exec(`UPDATE message SET `+strings.Join(sets, ", ")+` WHERE ROWID = ?`, append(args, rowID)...); err != nil {
+		return false, err
+	}
+	if _, err := s.tx.Exec(`DELETE FROM chat_message_join WHERE message_id = ?`, rowID); err != nil {
+		return false, err
+	}
+	if _, err := s.insert("chat_message_join", map[string]any{"chat_id": want.chatID, "message_id": rowID, "message_date": date}); err != nil {
+		return false, err
+	}
+	_, err = s.tx.Exec(`UPDATE attachment SET is_outgoing = ? WHERE ROWID IN (SELECT attachment_id FROM message_attachment_join WHERE message_id = ?)`, boolInt(want.fromMe), rowID)
+	return true, err
+}
+
+func boolInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
+// removeEmptyGroups deletes group chats an earlier mv2ios run created that
+// no longer hold any messages, such as the made-up groups of two that are
+// really one-to-one chats.
+func (s *smsDB) removeEmptyGroups(rooms []string) (int, error) {
+	removed := 0
+	for _, room := range rooms {
+		var chatID int64
+		err := s.tx.QueryRow(`
+			SELECT c.ROWID FROM chat c
+			WHERE c.room_name = ? AND c.style = ?
+			AND NOT EXISTS (SELECT 1 FROM chat_message_join j WHERE j.chat_id = c.ROWID)`, room, chatStyleGroup).Scan(&chatID)
+		if errors.Is(err, sql.ErrNoRows) {
+			continue
+		}
+		if err != nil {
+			return removed, err
+		}
+		if _, err := s.tx.Exec(`DELETE FROM chat_handle_join WHERE chat_id = ?`, chatID); err != nil {
+			return removed, err
+		}
+		if _, err := s.tx.Exec(`DELETE FROM chat WHERE ROWID = ?`, chatID); err != nil {
+			return removed, err
+		}
+		for key, g := range s.groups {
+			if g.id == chatID {
+				delete(s.groups, key)
+			}
+		}
+		removed++
+	}
+	return removed, nil
 }
 
 func (s *smsDB) addMessage(m newMessage) (int64, error) {
 	date := s.date(m.at)
 	values := map[string]any{
 		"guid":                  m.guid,
-		"text":                  strings.Repeat(attachmentPlaceholder, m.attachments) + m.text,
+		"text":                  strings.Repeat(attachmentPlaceholder, len(m.attachmentGUIDs)) + m.text,
+		"attributedBody":        attributedBody(m.text, m.attachmentGUIDs),
+		"part_count":            partCount(m.text, m.attachmentGUIDs),
 		"handle_id":             m.handleID,
 		"service":               serviceSMS,
 		"account":               s.account,
@@ -434,7 +600,7 @@ func (s *smsDB) addMessage(m newMessage) (int64, error) {
 		"date":                  date,
 		"is_finished":           1,
 		"is_from_me":            m.fromMe,
-		"cache_has_attachments": m.attachments > 0,
+		"cache_has_attachments": len(m.attachmentGUIDs) > 0,
 	}
 	if m.subject != "" {
 		values["subject"] = m.subject
@@ -445,15 +611,8 @@ func (s *smsDB) addMessage(m newMessage) (int64, error) {
 	if m.ownerID != "" {
 		values["destination_caller_id"] = m.ownerID
 	}
-	if m.fromMe {
-		values["is_sent"] = 1
-		values["is_delivered"] = 1
-		values["date_delivered"] = date
-	} else {
-		// Imported history is marked read; otherwise the phone would show
-		// every old message as new.
-		values["is_read"] = 1
-		values["date_read"] = date
+	for k, v := range directionValues(m.fromMe, date) {
+		values[k] = v
 	}
 	rowID, err := s.insert("message", values)
 	if err != nil {
