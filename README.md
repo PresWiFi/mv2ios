@@ -2,12 +2,12 @@
 
 Moves Android message history, including RCS and group chats that "Move to iOS" skips, into iPhone Messages. Runs locally; nothing is uploaded.
 
-> **Status: untested on real devices.** Tested only against a synthetic backup. Use only on an iPhone you're willing to set up again.
+> **Status: early.** A full move (~167,000 messages incl. RCS and group chats, ~3,400 photos/videos) has been restored to a real iPhone from a **Mac** with Finder. **Linux** (`idevicebackup2`) is not yet tested end to end. **Windows is not supported for now:** Apple Devices on Windows wouldn't restore the same backup. Use only on an iPhone you're willing to set up again.
 
 ## How it works
 
 1. **Export:** pairs with Google Messages like Messages for Web and downloads all conversations and attachments. No root.
-2. **Back up the iPhone** (Finder, iTunes, Apple Devices or `idevicebackup2`), unencrypted.
+2. **Back up the iPhone** (Finder on a Mac, `idevicebackup2` on Linux), unencrypted.
 3. **Inject** the messages into the backup. Duplicates are skipped.
 4. **Restore** with the same software.
 
@@ -17,7 +17,6 @@ Moves Android message history, including RCS and group chats that "Move to iOS" 
 
 Run the download from [Releases](https://github.com/PresWiFi/mv2ios/releases). A local browser page walks through each step. Close the mv2ios window to quit.
 
-- **Windows:** SmartScreen → *More info > Run anyway*.
 - **macOS:** right-click → *Open* the first time (unsigned).
 
 ### CLI
@@ -29,6 +28,7 @@ mv2ios export               # writes ./mv2ios-archive
 mv2ios backups              # list iPhone backups on this computer
 mv2ios inject               # report what would be added; changes nothing
 mv2ios inject -write        # modify the backup
+mv2ios verify               # after restoring, back up again and check every message arrived
 mv2ios undo                 # put the backup back as it was
 mv2ios unpair               # remove this computer from the Android phone
 mv2ios gui                  # open the browser page (same as running with no step)
@@ -38,7 +38,25 @@ mv2ios gui                  # open the browser page (same as running with no ste
 
 `export` resumes where it stopped. `inject -write` backs up the originals for `undo`.
 
-Before restoring, turn off **Settings > [your name] > iCloud > Messages** so iCloud doesn't overwrite the history. Turn it back on after.
+Before restoring, turn off **Settings > [your name] > iCloud > Messages** so iCloud doesn't overwrite the history (turn it back on after), and turn off **Find My**, or iOS refuses the restore.
+
+### Mac
+
+Back up with Finder (*Back Up Now*, *Encrypt local backup* off); mv2ios finds it in `~/Library/Application Support/MobileSync/Backup`. After `inject -write`, use Finder's *Restore Backup*.
+
+### Linux
+
+Uses [libimobiledevice](https://libimobiledevice.org). mv2ios looks for backups in `~/iphone-backups`.
+
+```
+sudo apt install libimobiledevice-utils usbmuxd   # Fedora: sudo dnf install libimobiledevice-utils usbmuxd
+idevicepair pair                    # unlock the iPhone and tap Trust
+idevicebackup2 encryption off       # only if backups are encrypted; asks for the password
+mkdir -p ~/iphone-backups
+idevicebackup2 backup --full ~/iphone-backups
+mv2ios inject -write
+idevicebackup2 restore --system --settings ~/iphone-backups   # iPhone restarts when done
+```
 
 ## Limitations
 
@@ -60,7 +78,7 @@ go test ./...
 Set `MV2IOS_DEBUG=1` to see the Google Messages protocol log.
 Set `MV2IOS_NO_BROWSER=1` to stop `gui` from opening a browser by itself.
 
-Push a tag like `v0.1.0`; GitHub Actions attaches Windows, macOS and Linux binaries to a draft release.
+Push a tag like `v0.1.0`; GitHub Actions attaches macOS and Linux binaries to a draft release.
 
 ## Support
 

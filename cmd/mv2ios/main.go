@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -62,6 +63,9 @@ func logf(format string, args ...any) {
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
+	if runtime.GOOS == "windows" {
+		fmt.Fprintln(os.Stderr, windowsNotice)
+	}
 	if len(os.Args) < 2 {
 		// Started by double-clicking, most likely: open the window.
 		if err := runGUI(ctx); err != nil {
@@ -292,6 +296,8 @@ func inject(args []string) error {
 	archiveDir := fs.String("archive", "mv2ios-archive", "folder written by export")
 	write := fs.Bool("write", false, "actually change the backup; without this, only report what would change")
 	me := fs.String("me", "", meHelp)
+	noAttachments := fs.Bool("no-attachments", false, "leave out pictures, videos and other attachments")
+	limit := fs.Int("limit", 0, "import at most this many conversations (0 means all)")
 	fs.Parse(args)
 
 	dir, err := pickBackup(*backup)
@@ -299,7 +305,14 @@ func inject(args []string) error {
 		return err
 	}
 	fmt.Println("Backup:", dir)
-	res, err := iosbackup.Inject(dir, *archiveDir, iosbackup.Options{DryRun: !*write, UndoRoot: undoRoot(), SelfAddresses: splitList(*me), Logf: logf})
+	res, err := iosbackup.Inject(dir, *archiveDir, iosbackup.Options{
+		DryRun:        !*write,
+		UndoRoot:      undoRoot(),
+		SelfAddresses: splitList(*me),
+		NoAttachments: *noAttachments,
+		Limit:         *limit,
+		Logf:          logf,
+	})
 	if err != nil {
 		return err
 	}
@@ -325,15 +338,22 @@ func inject(args []string) error {
 	if res.SkippedConversations > 0 {
 		fmt.Printf("%d conversations had no messages or no usable phone number and were skipped.\n", res.SkippedConversations)
 	}
+	if res.OverLimit > 0 {
+		fmt.Printf("%d conversations were left out because of -limit.\n", res.OverLimit)
+	}
 	switch {
 	case !*write:
 		fmt.Println("\nNothing was changed. Run again with -write to modify the backup.")
 	case res.UndoDir != "":
-		fmt.Println("\nThe backup is ready. Restore it to the iPhone with Finder, iTunes or Apple Devices.")
+		fmt.Println("\nThe backup is ready. Restore it to the iPhone with Finder (Mac) or idevicebackup2 (Linux).")
 		fmt.Println("To put the backup back as it was: mv2ios undo -backup", dir)
 	}
 	return nil
 }
+
+const windowsNotice = `Windows is not supported right now. In testing, Apple Devices on Windows could
+not restore a backup changed by mv2ios, while the same backup restored fine from
+a Mac. Use a Mac or Linux for the whole process.`
 
 const meHelp = "extra phone numbers or email addresses that are yours, separated by commas (your own number and email addresses under your name are found automatically)"
 

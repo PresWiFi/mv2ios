@@ -133,7 +133,7 @@ code { font-family: ui-monospace, Consolas, monospace; font-size: 13px; }
   <!-- 3. Inject -->
   <section class="card" id="c-inject">
     <h2><span class="num">3</span> Add them to an iPhone backup <span class="status" id="s-inject"></span></h2>
-    <p>Back up the iPhone to this computer with Finder, iTunes or Apple Devices. Leave <b>"Encrypt local backup" turned off</b>. Then pick the backup below.</p>
+    <p>Back up the iPhone to this computer with Finder on a Mac, or with <code>idevicebackup2</code> into <code>~/iphone-backups</code> on Linux. Leave <b>"Encrypt local backup" turned off</b>. Then pick the backup below.</p>
     <div id="backups"></div>
     <div class="row">
       <button id="b-rescan">Look for backups again</button>
@@ -150,7 +150,8 @@ code { font-family: ui-monospace, Consolas, monospace; font-size: 13px; }
     <h2><span class="num">4</span> Restore the iPhone</h2>
     <ol class="steps">
       <li>On the iPhone, turn off <b>Settings › [your name] › iCloud › Messages</b>, so iCloud does not overwrite the restored history.</li>
-      <li>Restore the backup to the iPhone with the same app that made it (Finder, iTunes or Apple Devices).</li>
+      <li>Turn off <b>Find My</b> on the iPhone; iOS will not restore a backup while it is on.</li>
+      <li>Restore the backup: in Finder choose <b>Restore Backup</b>, or on Linux run <code>idevicebackup2 restore --system --settings ~/iphone-backups</code>.</li>
       <li>Check that the messages arrived, then turn iCloud Messages back on if you use it.</li>
     </ol>
     <p style="color:var(--muted);font-size:14px">Imported RCS messages show as green "Text Message" bubbles. That is expected.</p>

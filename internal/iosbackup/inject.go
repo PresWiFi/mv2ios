@@ -23,7 +23,12 @@ type Options struct {
 	// SelfAddresses are extra numbers or email addresses that belong to the
 	// phone's owner, on top of the ones found automatically.
 	SelfAddresses []string
-	Logf          func(format string, args ...any)
+	// NoAttachments leaves out attachment files; messages that are only an
+	// attachment are left out too.
+	NoAttachments bool
+	// Limit imports at most this many conversations (0 means all).
+	Limit int
+	Logf  func(format string, args ...any)
 }
 
 type Result struct {
@@ -43,6 +48,8 @@ type Result struct {
 	RemovedChats       int
 	Attachments        int
 	MissingAttachments int
+	// OverLimit counts conversations left out because of Options.Limit.
+	OverLimit int
 	// UndoDir is empty when nothing was written to the backup.
 	UndoDir string
 }
@@ -217,6 +224,7 @@ func Inject(backupDir, archiveDir string, opts Options) (Result, error) {
 	owner := ppl.owner
 	var copies []pendingCopy
 	var rooms []string
+	taken := 0
 	for _, conv := range convs {
 		cp := ppl.plan(conv)
 		rooms = append(rooms, groupRoom(conv.ID))
@@ -224,6 +232,11 @@ func Inject(backupDir, archiveDir string, opts Options) (Result, error) {
 			res.SkippedConversations++
 			continue
 		}
+		if opts.Limit > 0 && taken >= opts.Limit {
+			res.OverLimit++
+			continue
+		}
+		taken++
 
 		var chatID, directHandle int64
 		var roomName string
@@ -247,6 +260,9 @@ func Inject(backupDir, archiveDir string, opts Options) (Result, error) {
 			fromMe := cp.fromMe(msg)
 			guid := derivedGUID("message", msg.ID)
 			usable, missing := usableAttachments(archiveDir, msg)
+			if opts.NoAttachments {
+				usable, missing = nil, 0
+			}
 			attGUIDs := make([]string, len(usable))
 			for i := range usable {
 				attGUIDs[i] = derivedGUID("attachment", fmt.Sprintf("%s#%d", msg.ID, i))

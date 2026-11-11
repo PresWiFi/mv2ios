@@ -22,11 +22,10 @@ jobs:
         run: |
           mkdir dist
           flags="-s -w -X main.version=${GITHUB_REF_NAME}"
-          GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "$flags" -o dist/mv2ios-windows-x64.exe ./cmd/mv2ios
-          GOOS=windows GOARCH=arm64 go build -trimpath -ldflags "$flags" -o dist/mv2ios-windows-arm64.exe ./cmd/mv2ios
           GOOS=darwin  GOARCH=arm64 go build -trimpath -ldflags "$flags" -o dist/mv2ios-macos-apple-silicon ./cmd/mv2ios
           GOOS=darwin  GOARCH=amd64 go build -trimpath -ldflags "$flags" -o dist/mv2ios-macos-intel ./cmd/mv2ios
           GOOS=linux   GOARCH=amd64 go build -trimpath -ldflags "$flags" -o dist/mv2ios-linux-x64 ./cmd/mv2ios
+          GOOS=linux   GOARCH=arm64 go build -trimpath -ldflags "$flags" -o dist/mv2ios-linux-arm64 ./cmd/mv2ios
           cd dist && sha256sum * > SHA256SUMS.txt
       - name: Draft release
         env:
