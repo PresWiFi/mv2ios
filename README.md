@@ -6,18 +6,20 @@ including the RCS chats and group chats that Apple's "Move to iOS" leaves behind
 Free and open source. Nothing leaves your computer: messages go from your
 Android phone to a folder on your disk, and from there into your own iPhone backup.
 
-> **Status: early and not yet proven on real devices.** The Android export and
-> the backup changes are implemented and tested against a synthetic backup.
-> Nobody has yet restored a modified backup to a real iPhone with this tool.
-> Until that is confirmed, try it only on an iPhone you are prepared to set up again.
+> **Status: early.** A full move (about 167,000 messages, RCS and group chats,
+> 3,400 photos and videos) has been restored to a real iPhone from a **Mac**
+> with Finder. **Linux** (with `idevicebackup2`) is not yet tested end to end.
+> **Windows is not supported for now:** Apple Devices on Windows would not
+> restore the same backup that worked from the Mac.
+> Try it only on an iPhone you are prepared to set up again.
 
 ## How it works
 
 1. **Export from Android.** mv2ios pairs with Google Messages the same way
    "Messages for Web" does and downloads every conversation and attachment.
    No root needed.
-2. **Back up the iPhone** to your computer with Finder, iTunes, Apple Devices
-   or `idevicebackup2`. The backup must not be encrypted (see Limitations).
+2. **Back up the iPhone** to your computer with Finder (Mac) or
+   `idevicebackup2` (Linux). The backup must not be encrypted (see Limitations).
 3. **Inject.** mv2ios adds the exported conversations to the Messages database
    inside that backup. Messages that are already on the iPhone are skipped.
 4. **Restore the backup** to the iPhone with the same software that made it.
@@ -32,8 +34,6 @@ A page opens in your web browser that walks you through every step: link the
 Android phone, download the messages, pick the iPhone backup, and add them to it.
 Keep the small mv2ios window open while you use it; close it to quit.
 
-- **Windows:** if SmartScreen warns about an unknown app, choose
-  *More info > Run anyway*.
 - **macOS:** right-click the file and choose *Open* the first time, because
   the app is not signed by Apple.
 
@@ -48,6 +48,7 @@ mv2ios export               # writes ./mv2ios-archive
 mv2ios backups              # list iPhone backups on this computer
 mv2ios inject               # report what would be added; changes nothing
 mv2ios inject -write        # modify the backup
+mv2ios verify               # after restoring and backing up again: check every message arrived
 mv2ios undo                 # put the backup back as it was
 mv2ios unpair               # remove this computer from the Android phone
 mv2ios gui                  # open the browser page (same as running with no step)
@@ -61,9 +62,37 @@ the sign-in, `pair -paste` lets you copy it from your own browser by hand.
 `export` can be stopped and run again; it continues where it left off.
 `inject -write` saves the original files first, and `undo` puts them back.
 
-Before restoring, turn off **Settings > [your name] > iCloud > Messages** on
-the iPhone, so iCloud does not overwrite the restored history. Turn it back on
-after checking that the messages arrived.
+Before restoring, on the iPhone:
+
+- turn off **Settings > [your name] > iCloud > Messages**, so iCloud does not
+  overwrite the restored history (turn it back on after checking that the
+  messages arrived);
+- turn off **Find My**, because iOS will not restore a backup while it is on.
+
+### On a Mac
+
+Back up with Finder (select the iPhone, *Back Up Now*, leave *Encrypt local
+backup* off). mv2ios finds the backup in
+`~/Library/Application Support/MobileSync/Backup` by itself. After
+`mv2ios inject -write`, restore it with Finder's *Restore Backup*.
+
+### On Linux
+
+Linux uses [libimobiledevice](https://libimobiledevice.org) instead of Finder.
+mv2ios looks for backups in `~/iphone-backups`.
+
+```
+sudo apt install libimobiledevice-utils usbmuxd   # Fedora: sudo dnf install libimobiledevice-utils usbmuxd
+idevicepair pair                    # unlock the iPhone and tap Trust
+idevicebackup2 encryption off       # only if backups are encrypted; asks for the backup password
+mkdir -p ~/iphone-backups
+idevicebackup2 backup --full ~/iphone-backups
+mv2ios inject                       # check what would be added
+mv2ios inject -write
+idevicebackup2 restore --system --settings ~/iphone-backups
+```
+
+The restore takes a while and the iPhone restarts when it is done.
 
 ## Limitations
 
@@ -89,7 +118,7 @@ Set `MV2IOS_DEBUG=1` to see the Google Messages protocol log.
 Set `MV2IOS_NO_BROWSER=1` to stop `gui` from opening a browser by itself.
 
 Releases are built by GitHub Actions: push a tag like `v0.1.0` and the
-Windows, macOS and Linux binaries are attached to a draft release.
+macOS and Linux binaries are attached to a draft release.
 
 ## Support
 

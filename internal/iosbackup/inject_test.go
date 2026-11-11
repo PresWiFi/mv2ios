@@ -300,6 +300,28 @@ func TestInjectAndUndo(t *testing.T) {
 	}
 }
 
+func TestInjectNoAttachmentsAndLimit(t *testing.T) {
+	backup := makeBackup(t)
+	arch := makeArchive(t)
+
+	res, err := Inject(backup, arch, Options{DryRun: true, UndoRoot: t.TempDir(), NoAttachments: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// m3 is only an attachment, so it is left out along with its files.
+	if res.Messages != 3 || res.Attachments != 0 || res.MissingAttachments != 0 {
+		t.Fatalf("no-attachments: %+v", res)
+	}
+
+	res, err = Inject(backup, arch, Options{DryRun: true, UndoRoot: t.TempDir(), Limit: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Conversations != 1 || res.OverLimit != 1 || res.Messages != 2 || res.Attachments != 1 {
+		t.Fatalf("limit 1: %+v", res)
+	}
+}
+
 func TestEncryptedBackupRefused(t *testing.T) {
 	backup := makeBackup(t)
 	writePlist(t, filepath.Join(backup, "Manifest.plist"), map[string]any{"IsEncrypted": true})

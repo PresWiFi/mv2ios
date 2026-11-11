@@ -42,6 +42,10 @@ type Info struct {
 	Encrypted      bool
 }
 
+// LinuxBackupDir is where the README tells Linux users to keep backups made
+// with idevicebackup2, relative to the home folder.
+const LinuxBackupDir = "iphone-backups"
+
 // DefaultDirs lists the places backup software stores backups on this OS.
 func DefaultDirs() []string {
 	home, _ := os.UserHomeDir()
@@ -55,14 +59,8 @@ func DefaultDirs() []string {
 	case "darwin":
 		dirs = append(dirs, filepath.Join(home, "Library", "Application Support", "MobileSync", "Backup"))
 	default:
-		// Under WSL the backups made by Windows are reachable through /mnt.
-		for _, pattern := range []string{
-			"/mnt/*/Users/*/Apple/MobileSync/Backup",
-			"/mnt/*/Users/*/AppData/Roaming/Apple Computer/MobileSync/Backup",
-		} {
-			matches, _ := filepath.Glob(pattern)
-			dirs = append(dirs, matches...)
-		}
+		// idevicebackup2 has no standard folder; the README uses this one.
+		dirs = append(dirs, filepath.Join(home, LinuxBackupDir))
 	}
 	return dirs
 }
